@@ -1,55 +1,21 @@
 # Keystone Switcher – XGIMI MoGo 2 Pro (Android TV 11)
 
-Application Android TV sans root qui rejoue des profils de correction trapézoïdale
-via ADB local (`dadb` → `127.0.0.1:5555` → `input keyevent`), protégée par un
-service d'accessibilité coupe-circuit.
+Enregistre la correction trapézoïdale actuelle sous un nom et bascule d'une position à l'autre en un clic.
+Sans root : l'app se connecte à l'ADB local du projecteur (`127.0.0.1:5555`).
 
-## 1. Préparer le projecteur (une fois)
+## Fonctionnement
 
-1. Paramètres → Préférences de l'appareil → À propos → cliquer 7 fois sur « Build ».
-2. Options pour les développeurs → activer **Débogage USB/ADB** et, s'il existe, **Débogage réseau / ADB over network** (port 5555).
-3. Installer l'application *Downloader* (AFTVnews) depuis le Play Store du projecteur.
+1. **+ Nouvelle position** : l'app photographie les réglages système, puis ouvre le réglage trapèze
+   (la première fois, tu l'ouvres toi-même à la télécommande ; l'app retient ensuite le menu).
+2. Tu ajustes l'image, puis tu appuies sur **Retour** pour revenir dans l'app et tu donnes un nom.
+   L'app compare les réglages avant/après et enregistre les valeurs qui ont changé.
+3. Un clic sur un nom réécrit ces valeurs (`settings put` / `setprop`).
 
-## 2. Compiler via GitHub Actions
+Limite : si XGIMI stocke la correction dans une zone privée (données de son app ou matériel),
+l'app l'indiquera (« Aucun réglage n'a changé ») : ce n'est alors pas faisable sans root.
 
-1. Créer un dépôt **public** (Downloader ne peut pas s'authentifier sur un dépôt privé) et y pousser ces fichiers sur `main`.
-2. *(Recommandé, une seule fois)* Actions → « Générer le keystore de signature » → Run workflow.
-   Télécharger l'artefact, copier le contenu du `.txt` dans Settings → Secrets and variables → Actions →
-   nouveau secret `DEBUG_KEYSTORE_BASE64`, puis supprimer l'artefact.
-   Sans ce secret, chaque build a une signature différente : il faut désinstaller l'app avant chaque mise à jour
-   (et réautoriser la clé ADB).
-3. Chaque push sur `main` publie l'APK ici :
-   `https://github.com/<utilisateur>/<depot>/releases/download/latest/app-debug.apk`
+## Build
 
-## 3. Première utilisation
-
-1. Lancer l'app → « Tester / Autoriser ADB » → accepter la fenêtre RSA à l'écran en cochant **Toujours autoriser**.
-2. Coupe-circuit : automatique via ADB (toute touche de la télécommande arrête une séquence). Le service d'accessibilité est optionnel.
-3. « Calibrer / Détecter le menu XGIMI » → « Lancer la détection » → ouvrir le menu trapèze manuel pendant les 20 s.
-4. Revenir dans l'app, vérifier le rapport, compléter les séquences (remise à zéro, sélection/validation des coins),
-   puis utiliser « Tester l'ouverture du menu » et « Tester ouverture + remise à zéro ».
-5. Créer les profils (Mur salon, Plafond, Bureau…) et les lancer en un clic.
-
-**Arrêt d'urgence** : n'importe quelle touche de la télécommande (lecture via ADB `getevent`), ou sortie du menu XGIMI. Le service d'accessibilité est optionnel.
-
-## Convention des décalages
-
-| Axe | Valeur positive | Valeur négative |
-|-----|-----------------|-----------------|
-| X   | DROITE (22)     | GAUCHE (21)     |
-| Y   | HAUT (19)       | BAS (20)        |
-
-Format JSON d'un profil (stocké dans DataStore) :
-
-```json
-{
-  "profileName": "Projection Plafond",
-  "stepDelayMs": 300,
-  "corners": {
-    "topLeft": { "x": 12, "y": -8 },
-    "topRight": { "x": -12, "y": -8 },
-    "bottomLeft": { "x": 4, "y": 0 },
-    "bottomRight": { "x": -4, "y": 0 }
-  }
-}
-```
+Chaque push sur `main` compile l'APK via GitHub Actions et le publie ici :
+`https://github.com/<utilisateur>/<depot>/releases/download/latest/app-debug.apk`
+(secret `DEBUG_KEYSTORE_BASE64` recommandé pour des mises à jour sans désinstallation).

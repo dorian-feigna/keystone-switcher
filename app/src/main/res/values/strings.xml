@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Keystone Switcher</string>
+    <string name="main_subtitle">Positions de correction trapézoïdale – XGIMI MoGo 2 Pro</string>
+    <string name="btn_test_adb">Tester / Autoriser ADB</string>
+    <string name="btn_new_position">+ Nouvelle position</string>
+    <string name="new_position_help">1. Nouvelle position : le réglage trapèze s\'ouvre (la première fois, ouvre-le toi-même avec la télécommande). 2. Ajuste l\'image. 3. Appuie sur Retour pour revenir ici et donne un nom. Ensuite, un clic sur un nom applique la position.</string>
+    <string name="section_positions">Positions enregistrées</string>
+    <string name="empty_positions">Aucune position enregistrée.</string>
+</resources>

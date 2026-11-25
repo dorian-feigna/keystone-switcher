@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="56dp"
+        android:paddingTop="32dp"
+        android:paddingEnd="56dp"
+        android:paddingBottom="32dp">
+
+        <TextView
+            style="@style/KTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/app_name" />
+
+        <TextView
+            style="@style/KHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/main_subtitle" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/bg_card"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="16dp">
+
+            <View
+                android:id="@+id/dotAdb"
+                android:layout_width="14dp"
+                android:layout_height="14dp"
+                android:background="@drawable/status_dot" />
+
+            <TextView
+                android:id="@+id/txtAdbStatus"
+                style="@style/KBody"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:layout_marginEnd="16dp"
+                android:layout_weight="1" />
+
+            <Button
+                android:id="@+id/btnTestAdb"
+                style="@style/KButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_test_adb" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/btnNewPosition"
+            style="@style/KButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/btn_new_position"
+            android:textSize="18sp" />
+
+        <TextView
+            style="@style/KHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/new_position_help" />
+
+        <TextView
+            android:id="@+id/txtStatus"
+            style="@style/KBody"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" />
+
+        <TextView
+            style="@style/KSection"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="@string/section_positions" />
+
+        <TextView
+            android:id="@+id/txtEmpty"
+            style="@style/KHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/empty_positions" />
+
+        <LinearLayout
+            android:id="@+id/positionContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical" />
+    </LinearLayout>
+</ScrollView>
