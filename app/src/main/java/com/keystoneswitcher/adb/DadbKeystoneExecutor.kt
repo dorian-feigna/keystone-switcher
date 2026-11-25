@@ -1,6 +1,7 @@
 package com.keystoneswitcher.adb
 
 import android.content.Context
+import android.os.SystemClock
 import android.widget.Toast
 import com.keystoneswitcher.data.Corner
 import com.keystoneswitcher.data.DeviceConfig
@@ -14,9 +15,11 @@ import dadb.AdbKeyPair
 import dadb.AdbShellResponse
 import dadb.Dadb
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -28,6 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -92,11 +96,14 @@ class DadbKeystoneExecutor(context: Context, private val repository: ProfileRepo
     companion object {
         const val HOST = "127.0.0.1"
         const val PORT = 5555
-        const val DETECTION_COUNTDOWN_S = 8
+        const val DETECTION_COUNTDOWN_S = 20
         private const val TCP_PROBE_TIMEOUT_MS = 1_500
         private const val CONNECT_TIMEOUT_MS = 3_000
         private const val AUTH_TIMEOUT_MS = 60_000          // temps laissé pour accepter la clé RSA sur la TV
         private const val AUTH_PENDING_HINT_MS = 2_500L     // au-delà : on considère la fenêtre RSA affichée
+        private const val GUARD_START_TIMEOUT_MS = 4_000L
+        private const val GUARD_GRACE_MS = 400L            // ignore le relâchement de la touche OK qui a lancé le profil
+        private const val FOREGROUND_RECHECK_EVERY = 8      // revérifie le premier plan toutes les N touches
         private const val UI_DUMP_PATH = "/data/local/tmp/keystone_ui_dump.xml"
         private val RESUMED_REGEX =
             Regex("""ActivityRecord\{[0-9a-f]+ u\d+ ([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)""")
@@ -427,9 +434,6 @@ class DadbKeystoneExecutor(context: Context, private val repository: ProfileRepo
         configOverride: DeviceConfig?,
         includeRestore: Boolean
     ): String? {
-        if (!ExecutionController.guardConnected.value) {
-            return "Service coupe-circuit inactif : active-le avant de lancer une séquence."
-        }
         val started = ExecutionController.launch(scope, label) { progress ->
             val config = configOverride ?: repository.currentDeviceConfig()
             val steps = buildPlan(profile, config, includeRestore)
@@ -493,22 +497,63 @@ class DadbKeystoneExecutor(context: Context, private val repository: ProfileRepo
         config: DeviceConfig,
         progress: (Int, Int, String) -> Unit
     ) {
-        val total = steps.size
-        steps.forEachIndexed { index, step ->
-            currentCoroutineContext().ensureActive()
-            progress(index + 1, total, step.label)
-            when (step) {
-                is Step.OpenMenu -> openMenu(config.targetComponent)
-                is Step.VerifyForeground -> {
-                    verifyForeground(config.watchPackage)
-                    ExecutionController.armWatch(config.watchPackage)
+        // Coupe-circuit principal : toute touche PHYSIQUE de la télécommande annule la séquence.
+        val guard = AdbInputGuard(keyPair)
+        val ready = CompletableDeferred<Unit>()
+        Thread({
+            try {
+                val stream = guard.open()
+                ready.complete(Unit)
+                guard.readLoop(stream, SystemClock.uptimeMillis() + GUARD_GRACE_MS) { key ->
+                    ExecutionController.abort("Touche $key pressée sur la télécommande")
                 }
-                is Step.Pause -> delay(step.ms)
-                is Step.Press -> {
-                    sendKey(step.keyCode)
-                    delay(stepDelayMs)
+                if (!guard.closed) ExecutionController.abort("Coupe-circuit ADB interrompu (getevent arrêté)")
+            } catch (e: Exception) {
+                ready.completeExceptionally(e)
+            }
+        }, "keystone-adb-guard").apply {
+            isDaemon = true
+            start()
+        }
+
+        try {
+            try {
+                withTimeout(GUARD_START_TIMEOUT_MS) { ready.await() }
+            } catch (e: TimeoutCancellationException) {
+                throw IllegalStateException("Coupe-circuit ADB indisponible : getevent n'a pas démarré.")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                throw IllegalStateException("Coupe-circuit ADB indisponible : ${e.message ?: e.javaClass.simpleName}")
+            }
+            delay(GUARD_GRACE_MS)
+
+            val total = steps.size
+            var pressCount = 0
+            var foregroundVerified = false
+            steps.forEachIndexed { index, step ->
+                currentCoroutineContext().ensureActive()
+                progress(index + 1, total, step.label)
+                when (step) {
+                    is Step.OpenMenu -> openMenu(config.targetComponent)
+                    is Step.VerifyForeground -> {
+                        verifyForeground(config.watchPackage)
+                        ExecutionController.armWatch(config.watchPackage)
+                        foregroundVerified = true
+                    }
+                    is Step.Pause -> delay(step.ms)
+                    is Step.Press -> {
+                        sendKey(step.keyCode)
+                        pressCount++
+                        delay(stepDelayMs)
+                        if (foregroundVerified && pressCount % FOREGROUND_RECHECK_EVERY == 0) {
+                            verifyForeground(config.watchPackage)
+                        }
+                    }
                 }
             }
+        } finally {
+            guard.close()
         }
     }
 

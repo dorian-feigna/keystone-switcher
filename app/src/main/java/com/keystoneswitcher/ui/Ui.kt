@@ -36,7 +36,7 @@ fun View.setDotColor(colorRes: Int) {
 fun RunState.describe(): String = when (this) {
     RunState.Idle -> "Aucune séquence en cours."
     is RunState.Running ->
-        if (total == 0) "$label : $detail" else "$label : étape $done/$total – $detail (Retour = annuler)"
+        if (total == 0) "$label : $detail" else "$label : étape $done/$total – $detail (une touche de la télécommande = annuler)"
     is RunState.Finished -> "$label : terminé."
     is RunState.Aborted -> "$label : ANNULÉ – $reason"
     is RunState.Failed -> "$label : ÉCHEC – $message"

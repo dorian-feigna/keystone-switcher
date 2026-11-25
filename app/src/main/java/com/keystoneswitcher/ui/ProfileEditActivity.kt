@@ -219,7 +219,7 @@ class ProfileEditActivity : Activity() {
 
     private fun sendSingleKey(code: Int) {
         if (ExecutionController.isRunning) {
-            toast("Séquence en cours : attends la fin ou appuie sur Retour.")
+            toast("Séquence en cours : attends la fin ou appuie sur une touche de la télécommande.")
             return
         }
         scope.launch {

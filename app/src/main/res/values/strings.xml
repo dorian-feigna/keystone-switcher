@@ -20,8 +20,8 @@
     <string name="btn_test_profile">Tester ce profil</string>
     <string name="btn_delete">Supprimer</string>
     <string name="calibration_title">Calibration du menu XGIMI</string>
-    <string name="calibration_help">1. Sélectionne « Lancer la détection ». 2. Pendant les 8 secondes, ouvre le menu de correction trapézoïdale MANUELLE du projecteur avec la télécommande. 3. L\'application capture l\'activité au premier plan et l\'enregistre. Reviens ensuite ici pour vérifier.</string>
-    <string name="btn_detect">Lancer la détection (8 s)</string>
+    <string name="calibration_help">1. Sélectionne « Lancer la détection ». 2. Pendant les 20 secondes, ouvre le menu de correction trapézoïdale MANUELLE du projecteur avec la télécommande. 3. L\'application capture l\'activité au premier plan et l\'enregistre. Reviens ensuite ici pour vérifier.</string>
+    <string name="btn_detect">Lancer la détection (20 s)</string>
     <string name="btn_test_open">Tester l\'ouverture du menu</string>
     <string name="btn_test_restore">Tester ouverture + remise à zéro</string>
     <string name="sequence_help">Séquences : codes séparés par des virgules (19 HAUT, 20 BAS, 21 GAUCHE, 22 DROITE, 23 OK, 4 RETOUR) ou alias (HAUT, BAS, GAUCHE, DROITE, OK, RETOUR, MENU, SETTINGS). Champ vide = étape ignorée.</string>

@@ -49,7 +49,7 @@ class MainActivity : Activity() {
 
         btnTestAdb.setOnClickListener {
             if (ExecutionController.isRunning) {
-                toast("Séquence en cours : attends la fin ou appuie sur Retour.")
+                toast("Séquence en cours : attends la fin ou appuie sur une touche de la télécommande.")
             } else {
                 scope.launch { app.executor.testConnection() }
             }
@@ -105,15 +105,24 @@ class MainActivity : Activity() {
         }
         dotAdb.setDotColor(color)
         btnTestAdb.isEnabled = state !is AdbState.Checking && state !is AdbState.AuthPending
+        renderGuard()
     }
 
+    /**
+     * Coupe-circuit principal = lecture de la télécommande via ADB (getevent) : il suit l'état ADB.
+     * Le service d'accessibilité n'est plus qu'un observateur complémentaire, optionnel.
+     */
     private fun renderGuard() {
-        val enabled = KeystoneGuardService.isEnabledInSettings(this)
-        val connected = ExecutionController.guardConnected.value
-        val (text, color) = when {
-            connected -> "Coupe-circuit actif (Retour = arrêt immédiat)" to R.color.state_ok
-            enabled -> "Coupe-circuit activé, en attente du système…" to R.color.state_warn
-            else -> "Coupe-circuit inactif : requis pour lancer un profil" to R.color.state_error
+        val adbReady = app.executor.adbState.value is AdbState.Connected
+        val accessibility = when {
+            ExecutionController.guardConnected.value -> "accessibilité active"
+            KeystoneGuardService.isEnabledInSettings(this) -> "accessibilité en attente"
+            else -> "accessibilité inactive (optionnelle)"
+        }
+        val (text, color) = if (adbReady) {
+            "Coupe-circuit prêt : toute touche de la télécommande arrête la séquence · $accessibility" to R.color.state_ok
+        } else {
+            "Coupe-circuit indisponible tant qu'ADB n'est pas connecté · $accessibility" to R.color.state_error
         }
         txtGuardStatus.text = text
         dotGuard.setDotColor(color)

@@ -24,13 +24,13 @@ service d'accessibilité coupe-circuit.
 ## 3. Première utilisation
 
 1. Lancer l'app → « Tester / Autoriser ADB » → accepter la fenêtre RSA à l'écran en cochant **Toujours autoriser**.
-2. Activer le coupe-circuit : « Activer via ADB » (ou Paramètres d'accessibilité).
-3. « Calibrer / Détecter le menu XGIMI » → « Lancer la détection » → ouvrir le menu trapèze manuel pendant 8 s.
+2. Coupe-circuit : automatique via ADB (toute touche de la télécommande arrête une séquence). Le service d'accessibilité est optionnel.
+3. « Calibrer / Détecter le menu XGIMI » → « Lancer la détection » → ouvrir le menu trapèze manuel pendant les 20 s.
 4. Revenir dans l'app, vérifier le rapport, compléter les séquences (remise à zéro, sélection/validation des coins),
    puis utiliser « Tester l'ouverture du menu » et « Tester ouverture + remise à zéro ».
 5. Créer les profils (Mur salon, Plafond, Bureau…) et les lancer en un clic.
 
-**Arrêt d'urgence** : touche Retour de la télécommande, ou quitter le menu XGIMI.
+**Arrêt d'urgence** : n'importe quelle touche de la télécommande (lecture via ADB `getevent`), ou sortie du menu XGIMI. Le service d'accessibilité est optionnel.
 
 ## Convention des décalages
 
