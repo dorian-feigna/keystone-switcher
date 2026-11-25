@@ -20,8 +20,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Écran unique :
- *  - « Nouvelle position » : ouvre le réglage trapèze, puis propose d'enregistrer la position au retour ;
- *  - un clic sur une position enregistrée : l'applique.
+ *  - « Ouvrir le réglage trapèze » : ouvre directement le menu de correction manuelle ;
+ *  - « Enregistrer la position actuelle » : lit les 4 coins et les enregistre sous un nom ;
+ *  - un clic sur un nom : applique la position (pilotage automatique du menu XGIMI).
  */
 class MainActivity : Activity() {
 
@@ -30,14 +31,11 @@ class MainActivity : Activity() {
     private lateinit var dotAdb: View
     private lateinit var txtAdbStatus: TextView
     private lateinit var btnTestAdb: Button
-    private lateinit var btnNewPosition: Button
+    private lateinit var btnOpenMenu: Button
+    private lateinit var btnSavePosition: Button
     private lateinit var txtStatus: TextView
     private lateinit var txtEmpty: TextView
     private lateinit var positionContainer: LinearLayout
-
-    /** true entre le clic sur « Nouvelle position » et le retour dans l'app. */
-    private var awaitingReturn = false
-    private var leftApp = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,18 +44,27 @@ class MainActivity : Activity() {
         dotAdb = findViewById(R.id.dotAdb)
         txtAdbStatus = findViewById(R.id.txtAdbStatus)
         btnTestAdb = findViewById(R.id.btnTestAdb)
-        btnNewPosition = findViewById(R.id.btnNewPosition)
+        btnOpenMenu = findViewById(R.id.btnOpenMenu)
+        btnSavePosition = findViewById(R.id.btnSavePosition)
         txtStatus = findViewById(R.id.txtStatus)
         txtEmpty = findViewById(R.id.txtEmpty)
         positionContainer = findViewById(R.id.positionContainer)
 
         btnTestAdb.setOnClickListener { scope.launch { app.adb.testConnection() } }
-        btnNewPosition.setOnClickListener { startNewPosition() }
+        btnOpenMenu.setOnClickListener { openMenu() }
+        btnSavePosition.setOnClickListener { showSaveDialog() }
 
         scope.launch { app.adb.state.collect { renderAdb(it) } }
         scope.launch { app.repository.positions.collect { renderPositions(it) } }
+        scope.launch { app.engine.status.collect { if (it.isNotEmpty()) txtStatus.text = it } }
+        scope.launch {
+            app.engine.busy.collect { busy ->
+                btnOpenMenu.isEnabled = !busy
+                btnSavePosition.isEnabled = !busy
+            }
+        }
 
-        btnNewPosition.requestFocus()
+        btnOpenMenu.requestFocus()
     }
 
     override fun onResume() {
@@ -65,16 +72,6 @@ class MainActivity : Activity() {
         if (app.adb.state.value is AdbState.Unknown) {
             scope.launch { app.adb.testConnection() }
         }
-        if (awaitingReturn && leftApp) {
-            awaitingReturn = false
-            leftApp = false
-            if (app.engine.hasPendingSession) showSaveDialog()
-        }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        if (awaitingReturn) leftApp = true
     }
 
     override fun onDestroy() {
@@ -84,22 +81,16 @@ class MainActivity : Activity() {
 
     // ---------------- Actions ----------------
 
-    private fun startNewPosition() {
-        awaitingReturn = true
-        leftApp = false
-        txtStatus.text = "Préparation (lecture des réglages actuels)…"
-        btnNewPosition.isEnabled = false
+    private fun openMenu() {
+        txtStatus.text = "Ouverture du réglage trapèze…"
         scope.launch {
-            try {
-                val message = app.engine.startNewPosition(app.appScope)
-                txtStatus.text = message
-                toast(message)
+            val message = try {
+                app.engine.openMenu(app.appScope)
             } catch (e: Exception) {
-                awaitingReturn = false
-                txtStatus.text = "Impossible de démarrer : ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                btnNewPosition.isEnabled = true
+                "Ouverture impossible : ${e.message ?: e.javaClass.simpleName}"
             }
+            txtStatus.text = message
+            toast(message)
         }
     }
 
@@ -112,15 +103,11 @@ class MainActivity : Activity() {
             addView(input)
         }
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Enregistrer cette position ?")
-            .setMessage("Donne un nom à la correction trapézoïdale actuelle.")
+            .setTitle("Enregistrer la position actuelle")
+            .setMessage("Donne un nom à la correction trapézoïdale actuelle (un nom existant est remplacé).")
             .setView(container)
-            .setCancelable(false)
             .setPositiveButton("Enregistrer", null)
-            .setNegativeButton("Annuler") { _, _ ->
-                app.engine.cancelSession()
-                txtStatus.text = "Enregistrement annulé."
-            }
+            .setNegativeButton("Annuler", null)
             .create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
@@ -141,7 +128,7 @@ class MainActivity : Activity() {
         txtStatus.text = "Enregistrement de « $name »…"
         scope.launch {
             txtStatus.text = try {
-                app.engine.finishSession(name)
+                app.engine.saveCurrent(name)
             } catch (e: Exception) {
                 "Échec de l'enregistrement : ${e.message ?: e.javaClass.simpleName}"
             }
@@ -149,13 +136,8 @@ class MainActivity : Activity() {
     }
 
     private fun applyPosition(position: KeystonePosition) {
-        txtStatus.text = "Application de « ${position.name} »…"
-        scope.launch {
-            txtStatus.text = try {
-                app.engine.applyPosition(position)
-            } catch (e: Exception) {
-                "Échec : ${e.message ?: e.javaClass.simpleName}"
-            }
+        if (!app.engine.applyPosition(app.appScope, position)) {
+            toast("Une position est déjà en cours d'application.")
         }
     }
 

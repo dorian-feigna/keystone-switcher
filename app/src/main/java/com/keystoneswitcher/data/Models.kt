@@ -53,16 +53,24 @@ data class KeystonePosition(
 /**
  * Ce que l'app a appris automatiquement sur le projecteur :
  *  - menuComponent : activité du réglage trapèze manuel (package/activité), pour l'ouvrir en un clic ;
- *  - keystoneKeys  : réglages système qui changent quand on modifie la correction trapézoïdale.
+ *  - cornerOrder   : ordre des coins quand on appuie sur OK dans le menu (lt, rt, rb, lb) ;
+ *  - inverted      : axes dont le sens des flèches est inversé ("lt_0" = coin lt, axe X ; "_1" = axe Y).
  */
 data class EngineConfig(
     val menuComponent: String = "",
-    val keystoneKeys: Set<String> = emptySet()
+    val cornerOrder: List<String> = listOf("lt"),
+    val inverted: Set<String> = emptySet()
 ) {
     fun toJson(): String {
-        val keys = JSONArray()
-        keystoneKeys.sorted().forEach { keys.put(it) }
-        return JSONObject().put("menuComponent", menuComponent).put("keystoneKeys", keys).toString()
+        val order = JSONArray()
+        cornerOrder.forEach { order.put(it) }
+        val inv = JSONArray()
+        inverted.sorted().forEach { inv.put(it) }
+        return JSONObject()
+            .put("menuComponent", menuComponent)
+            .put("cornerOrder", order)
+            .put("inverted", inv)
+            .toString()
     }
 
     companion object {
@@ -70,9 +78,14 @@ data class EngineConfig(
             if (raw.isNullOrBlank()) return EngineConfig()
             return try {
                 val o = JSONObject(raw)
-                val array = o.optJSONArray("keystoneKeys")
-                val keys = if (array == null) emptySet() else (0 until array.length()).map { array.getString(it) }.toSet()
-                EngineConfig(o.optString("menuComponent", ""), keys)
+                val order = o.optJSONArray("cornerOrder")
+                val inv = o.optJSONArray("inverted")
+                EngineConfig(
+                    menuComponent = o.optString("menuComponent", ""),
+                    cornerOrder = if (order == null || order.length() == 0) listOf("lt")
+                    else (0 until order.length()).map { order.getString(it) },
+                    inverted = if (inv == null) emptySet() else (0 until inv.length()).map { inv.getString(it) }.toSet()
+                )
             } catch (e: Exception) {
                 EngineConfig()
             }

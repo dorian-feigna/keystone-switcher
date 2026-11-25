@@ -58,21 +58,36 @@
                 android:text="@string/btn_test_adb" />
         </LinearLayout>
 
-        <Button
-            android:id="@+id/btnNewPosition"
-            style="@style/KButton"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="@string/btn_new_position"
-            android:textSize="18sp" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnOpenMenu"
+                style="@style/KButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_open_menu"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btnSavePosition"
+                style="@style/KButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="14dp"
+                android:text="@string/btn_save_position"
+                android:textSize="18sp" />
+        </LinearLayout>
 
         <TextView
             style="@style/KHint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:text="@string/new_position_help" />
+            android:text="@string/help" />
 
         <TextView
             android:id="@+id/txtStatus"

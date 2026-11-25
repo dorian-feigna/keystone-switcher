@@ -2,23 +2,31 @@ package com.keystoneswitcher.adb
 
 import android.content.Context
 import android.os.SystemClock
-import com.keystoneswitcher.data.EngineConfig
 import com.keystoneswitcher.data.KeystonePosition
 import com.keystoneswitcher.data.PositionRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.roundToInt
+import kotlin.math.sign
 
 /**
- * Principe :
- *  1. « Nouvelle position » : photographie de tous les réglages système (settings global/system/secure + getprop),
- *     puis ouverture du réglage trapèze XGIMI (ou ouverture manuelle à la télécommande la première fois).
- *  2. Au retour dans l'app : seconde photographie. Les réglages qui ont changé = ceux de la correction trapézoïdale.
- *     Leurs valeurs actuelles sont enregistrées sous le nom choisi.
- *  3. « Appliquer » : réécriture de ces valeurs via ADB (settings put / setprop).
+ * Les 4 coins sont lisibles dans les propriétés vendor.mstar.pos_{lt,rt,rb,lb}_offset ("x:y"),
+ * mais Android interdit de les écrire sans root. Application d'une position = pilotage du menu XGIMI
+ * en boucle fermée :
+ *  - le menu s'ouvre sur le coin haut-gauche ; OK = coin suivant ; flèches = déplacement ; Retour = valider ;
+ *  - après chaque envoi de touches, la position réelle est relue et la correction recalculée.
  */
 class KeystoneEngine(
     context: Context,
@@ -27,192 +35,303 @@ class KeystoneEngine(
 ) {
 
     companion object {
-        private const val POLL_INTERVAL_MS = 2_000L
-        private const val SESSION_MAX_MS = 10 * 60_000L
-        private val SETTINGS_NAMESPACES = listOf("global", "system", "secure")
-        private val PROP_REGEX = Regex("""^\[(.+?)]: \[(.*)]$""")
+        private const val KEY_UP = 19
+        private const val KEY_DOWN = 20
+        private const val KEY_LEFT = 21
+        private const val KEY_RIGHT = 22
+        private const val KEY_OK = 23
+        private const val KEY_BACK = 4
+
+        private const val AXIS_X = 0
+        private const val AXIS_Y = 1
+
+        private const val OPEN_SETTLE_MS = 1_500L   // attente d'affichage du menu
+        private const val KEY_SETTLE_MS = 250L      // attente de mise à jour de la position après des touches
+        private const val OK_SETTLE_MS = 400L       // attente après changement de coin
+        private const val MAX_BATCH = 12            // touches max envoyées d'un coup
+        private const val MAX_ITERATIONS = 60       // garde-fou par axe
+        private const val LEARN_TIMEOUT_MS = 120_000L
+        private const val LEARN_POLL_MS = 1_500L
+
+        val CORNER_IDS = listOf("lt", "rt", "rb", "lb")
+        val CORNER_LABELS = mapOf("lt" to "haut-gauche", "rt" to "haut-droite", "rb" to "bas-droite", "lb" to "bas-gauche")
+
+        private val CORNER_REGEX = Regex("""\[vendor\.mstar\.pos_(lt|rt|lb|rb)_offset]: \[(-?\d+):(-?\d+)]""")
         private val RESUMED_REGEX =
             Regex("""ActivityRecord\{[0-9a-f]+ u\d+ ([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)""")
-
-        /** Réglages qui bougent tout seuls (horloge, compteurs, réseau…) : jamais retenus. */
-        private val NOISE_REGEX = Regex(
-            "(?i)(time|stamp|uptime|boot|count|last_|battery|wifi|wlan|bluetooth|bt_|volume|ntp|usage|" +
-                "screen_off|heartbeat|random|seed|session|token|net\\.|dhcp|ipv|gsm|telephony)"
-        )
-
-        /** Noms évocateurs de la correction trapézoïdale : prioritaires s'il y en a. */
-        private val KEYSTONE_HINT_REGEX = Regex(
-            "(?i)(keystone|trapez|kst|corner|warp|distort|correct|projector|xgimi|" +
-                "left_top|right_top|left_bottom|right_bottom|lt_|rt_|lb_|rb_)"
-        )
-
-        /** Mots évocateurs dans le nom d'une activité, pour reconnaître le menu trapèze. */
         private val MENU_HINT_REGEX = Regex("(?i)(keystone|trapez|correct|calib|warp|distort|projection)")
+
+        fun propKey(cornerId: String) = "prop:vendor.mstar.pos_${cornerId}_offset"
     }
+
+    data class XY(val x: Int, val y: Int) {
+        fun get(axis: Int): Int = if (axis == AXIS_X) x else y
+        override fun toString() = "$x:$y"
+    }
+
+    private class MenuNotRespondingException(message: String) : IllegalStateException(message)
 
     private val ownPackage = context.applicationContext.packageName
 
-    private class CaptureSession(val baseline: Map<String, String>, val openedDirectly: Boolean) {
-        val seenComponents = mutableListOf<String>() // protégé par synchronized(seenComponents)
-        var pollJob: Job? = null
+    private val _status = MutableStateFlow("")
+    val status: StateFlow<String> = _status.asStateFlow()
+
+    private val _busy = MutableStateFlow(false)
+    val busy: StateFlow<Boolean> = _busy.asStateFlow()
+
+    private var learnJob: Job? = null
+
+    // ------------------------------------------------------------------
+    // Ouvrir le réglage trapèze (et l'apprendre si nécessaire)
+    // ------------------------------------------------------------------
+
+    suspend fun openMenu(scope: CoroutineScope): String {
+        ensureAdb()
+        val config = repository.currentConfig()
+        if (config.menuComponent.isNotBlank() && tryOpen(config.menuComponent)) {
+            return "Réglage trapèze ouvert. Une fois l'image ajustée, appuie sur Retour puis « Enregistrer la position actuelle »."
+        }
+        startLearning(scope)
+        return "Je ne sais pas encore ouvrir ce menu : ouvre le réglage trapèze MANUEL à la télécommande, " +
+            "puis reviens dans l'app. Il sera retenu pour les fois suivantes."
     }
 
-    @Volatile
-    private var session: CaptureSession? = null
-
-    val hasPendingSession: Boolean
-        get() = session != null
-
-    // ------------------------------------------------------------------
-    // 1. Démarrer une nouvelle position
-    // ------------------------------------------------------------------
-
-    /** Retourne le message à afficher. Lance une exception si ADB n'est pas disponible. */
-    suspend fun startNewPosition(scope: CoroutineScope): String {
-        val state = adb.ensureConnected()
-        if (state !is AdbState.Connected) throw IllegalStateException("ADB non connecté : ${adb.describe(state)}")
-
-        cancelSession()
-        val baseline = snapshot()
-        val config = repository.currentConfig()
-
-        val opened = config.menuComponent.isNotBlank() && tryOpen(config.menuComponent)
-        val newSession = CaptureSession(baseline, openedDirectly = opened)
-        session = newSession
-
-        // Apprentissage du menu : on note les écrans visités pendant que l'app est en arrière-plan
-        newSession.pollJob = scope.launch(Dispatchers.IO) {
-            val deadline = SystemClock.uptimeMillis() + SESSION_MAX_MS
-            while (isActive && session === newSession && SystemClock.uptimeMillis() < deadline) {
+    private fun startLearning(scope: CoroutineScope) {
+        learnJob?.cancel()
+        learnJob = scope.launch(Dispatchers.IO) {
+            val seen = mutableListOf<String>()
+            var sawOtherScreen = false
+            val deadline = SystemClock.uptimeMillis() + LEARN_TIMEOUT_MS
+            while (isActive && SystemClock.uptimeMillis() < deadline) {
                 val component = runCatching { currentForegroundComponent() }.getOrNull()
                 if (component != null) {
-                    synchronized(newSession.seenComponents) {
-                        if (newSession.seenComponents.lastOrNull() != component) newSession.seenComponents.add(component)
+                    if (component.substringBefore('/') == ownPackage) {
+                        if (sawOtherScreen) break // l'utilisateur est revenu dans l'app
+                    } else {
+                        sawOtherScreen = true
+                        if (seen.lastOrNull() != component) seen.add(component)
                     }
                 }
-                delay(POLL_INTERVAL_MS)
+                delay(LEARN_POLL_MS)
+            }
+            val picked = pickMenuComponent(seen)
+            _status.value = if (picked != null) {
+                repository.updateConfig { it.copy(menuComponent = picked) }
+                "Menu trapèze retenu ($picked) : le bouton l'ouvrira directement."
+            } else {
+                "Menu trapèze non détecté : réessaie « Ouvrir le réglage trapèze »."
             }
         }
-
-        return if (opened) {
-            "Réglage trapèze ouvert. Ajuste la position, puis appuie sur Retour pour revenir ici et l'enregistrer."
-        } else {
-            "Ouvre le réglage trapèze MANUEL avec la télécommande, ajuste la position, puis reviens dans " +
-                "Keystone Switcher pour l'enregistrer. (L'app retiendra ce menu pour l'ouvrir elle-même la prochaine fois.)"
-        }
-    }
-
-    fun cancelSession() {
-        session?.pollJob?.cancel()
-        session = null
     }
 
     // ------------------------------------------------------------------
-    // 2. Enregistrer la position au retour dans l'app
+    // Enregistrer la position actuelle
     // ------------------------------------------------------------------
 
-    suspend fun finishSession(name: String): String {
-        val current = session ?: throw IllegalStateException("Aucun réglage en cours : appuie d'abord sur « Nouvelle position ».")
-        current.pollJob?.cancel()
-
-        val after = snapshot()
-        val changed = diff(current.baseline, after)
-        val config = repository.currentConfig()
-
-        // Mémorise le menu pour l'ouvrir directement la prochaine fois
-        val learnedMenu = if (current.openedDirectly) null else pickMenuComponent(synchronized(current.seenComponents) {
-            current.seenComponents.toList()
-        })
-
-        val keys = config.keystoneKeys + changed
-        session = null
-
-        if (learnedMenu != null) {
-            repository.updateConfig { it.copy(menuComponent = learnedMenu) }
+    suspend fun saveCurrent(name: String): String {
+        ensureAdb()
+        val corners = readCorners()
+        if (corners.size < 4) {
+            return "Lecture impossible : coins trouvés = ${corners.keys.joinToString().ifEmpty { "aucun" }}."
         }
-
-        if (keys.isEmpty()) {
-            return "Aucun réglage n'a changé. Modifie bien la correction trapézoïdale avant de revenir, puis réessaie. " +
-                "Si le problème persiste, XGIMI stocke ces valeurs dans une zone inaccessible sans root."
-        }
-
-        val values = keys.mapNotNull { key -> after[key]?.let { key to it } }.toMap()
+        val values = CORNER_IDS.associate { id -> propKey(id) to corners.getValue(id).toString() }
         val replaced = repository.savePosition(KeystonePosition(name, values, System.currentTimeMillis()))
-        repository.updateConfig { it.copy(keystoneKeys = keys) }
-
-        val shown = values.keys.sorted().take(6).joinToString(", ") { it.substringAfter(':') }
-        val more = if (values.size > 6) " …" else ""
-        val action = if (replaced) "remplacée" else "enregistrée"
-        return "Position « $name » $action (${values.size} réglage(s) : $shown$more)."
+        val detail = CORNER_IDS.joinToString(" · ") { "${CORNER_LABELS.getValue(it)} ${corners.getValue(it)}" }
+        return "Position « $name » ${if (replaced) "remplacée" else "enregistrée"} ($detail)."
     }
 
     // ------------------------------------------------------------------
-    // 3. Appliquer une position
+    // Appliquer une position (en arrière-plan, l'app passe derrière le menu XGIMI)
     // ------------------------------------------------------------------
 
-    suspend fun applyPosition(position: KeystonePosition): String {
-        val state = adb.ensureConnected()
-        if (state !is AdbState.Connected) throw IllegalStateException("ADB non connecté : ${adb.describe(state)}")
-        if (position.values.isEmpty()) {
-            return "« ${position.name} » ne contient aucun réglage : enregistre-la de nouveau."
+    /** Retourne false si une application est déjà en cours. */
+    fun applyPosition(scope: CoroutineScope, position: KeystonePosition): Boolean {
+        if (_busy.value) return false
+        _busy.value = true
+        scope.launch(Dispatchers.IO) {
+            try {
+                _status.value = runApply(position)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: MenuNotRespondingException) {
+                repository.updateConfig { it.copy(menuComponent = "") }
+                _status.value = "« ${position.name} » : ${e.message} Ouvre une fois le menu avec " +
+                    "« Ouvrir le réglage trapèze » pour que l'app le réapprenne."
+            } catch (e: Exception) {
+                _status.value = "« ${position.name} » : échec – ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                _busy.value = false
+            }
         }
-        val errors = position.values.mapNotNull { (key, value) -> write(key, value) }
-        val ok = position.values.size - errors.size
-        return if (errors.isEmpty()) {
-            "Position « ${position.name} » appliquée ($ok réglage(s) écrit(s))."
+        return true
+    }
+
+    private suspend fun runApply(position: KeystonePosition): String {
+        ensureAdb()
+        val targets = CORNER_IDS.mapNotNull { id ->
+            position.values[propKey(id)]?.let { parseXY(it) }?.let { id to it }
+        }.toMap()
+        if (targets.isEmpty()) return "« ${position.name} » ne contient aucune position de coin : enregistre-la de nouveau."
+
+        val config = repository.currentConfig()
+        if (config.menuComponent.isBlank()) {
+            return "Ouvre d'abord une fois le menu avec « Ouvrir le réglage trapèze » pour que l'app le retienne."
+        }
+
+        val start = readCorners()
+        if (start.size < 4) return "Positions des coins illisibles (trouvés : ${start.keys.joinToString()})."
+        if (targets.all { (id, xy) -> start[id] == xy }) return "« ${position.name} » est déjà appliquée."
+
+        _status.value = "« ${position.name} » : ouverture du réglage trapèze…"
+        if (!tryOpen(config.menuComponent)) {
+            throw MenuNotRespondingException("impossible d'ouvrir le menu ${config.menuComponent}.")
+        }
+        delay(OPEN_SETTLE_MS)
+
+        val corners = readCorners().toMutableMap()
+        val order = config.cornerOrder.toMutableList()
+        val inverted = config.inverted.toMutableSet()
+
+        for (slot in 0 until 4) {
+            currentCoroutineContext().ensureActive()
+            val expected = order.getOrNull(slot)
+            val alreadyOk = expected != null && (targets[expected] ?: corners[expected]) == corners[expected]
+            val corner = if (alreadyOk && expected != null) expected else identifySelected(corners)
+            if (order.size > slot) order[slot] = corner else order.add(corner)
+
+            val target = targets[corner] ?: start.getValue(corner)
+            _status.value = "« ${position.name} » : coin ${CORNER_LABELS.getValue(corner)} (${slot + 1}/4)…"
+            moveAxis(corner, target.x, AXIS_X, corners, inverted)
+            moveAxis(corner, target.y, AXIS_Y, corners, inverted)
+
+            if (slot < 3) {
+                press(KEY_OK, 1)
+                delay(OK_SETTLE_MS)
+                corners.putAll(readCorners())
+            }
+        }
+        press(KEY_BACK, 1) // validation
+
+        repository.updateConfig { it.copy(cornerOrder = order, inverted = inverted) }
+
+        delay(OK_SETTLE_MS)
+        val final = readCorners()
+        val deviation = targets.maxOf { (id, xy) ->
+            val f = final[id] ?: return@maxOf 0
+            max(abs(f.x - xy.x), abs(f.y - xy.y))
+        }
+        return if (deviation == 0) {
+            "Position « ${position.name} » appliquée."
         } else {
-            "« ${position.name} » : $ok réglage(s) écrit(s), ${errors.size} refusé(s) → ${errors.take(3).joinToString(" ; ")}"
+            "Position « ${position.name} » appliquée (écart résiduel max : $deviation)."
         }
+    }
+
+    /** Envoie une touche test et identifie le coin qui a bougé = coin actuellement sélectionné. */
+    private suspend fun identifySelected(corners: MutableMap<String, XY>): String {
+        val before = readCorners()
+        press(KEY_RIGHT, 1)
+        delay(KEY_SETTLE_MS)
+        var after = readCorners()
+        var moved = changedCorner(before, after)
+        if (moved == null) { // coin peut-être en butée à droite
+            press(KEY_LEFT, 1)
+            delay(KEY_SETTLE_MS)
+            val again = readCorners()
+            moved = changedCorner(after, again)
+            after = again
+        }
+        corners.putAll(after)
+        return moved ?: throw MenuNotRespondingException("le menu trapèze ne réagit pas aux flèches.")
+    }
+
+    private fun changedCorner(before: Map<String, XY>, after: Map<String, XY>): String? =
+        CORNER_IDS.firstOrNull { id -> before[id] != null && after[id] != null && before[id] != after[id] }
+
+    /** Boucle fermée sur un axe : envoie des flèches, relit, corrige, jusqu'à la valeur cible. */
+    private suspend fun moveAxis(corner: String, target: Int, axis: Int, corners: MutableMap<String, XY>, inverted: MutableSet<String>) {
+        val invKey = "${corner}_$axis"
+        var step = 1.0
+        var noMove = 0
+        var flips = 0
+        repeat(MAX_ITERATIONS) {
+            val current = corners[corner]?.get(axis) ?: throw IllegalStateException("coin $corner illisible.")
+            val diff = target - current
+            if (diff == 0) return
+            if (step > 1.0 && abs(diff) < step / 2) return // cible entre deux pas : au plus près
+
+            val increaseKey = increaseKey(axis, invKey in inverted)
+            val key = if (diff > 0) increaseKey else opposite(increaseKey)
+            val count = (abs(diff) / step).roundToInt().coerceIn(1, MAX_BATCH)
+            press(key, count)
+            delay(KEY_SETTLE_MS)
+
+            val after = readCorners()
+            corners.putAll(after)
+            val updated = after[corner]?.get(axis) ?: throw IllegalStateException("coin $corner illisible.")
+            val moved = updated - current
+            if (moved == 0) {
+                noMove++
+                if (noMove >= 2) return // butée atteinte
+                return@repeat
+            }
+            noMove = 0
+            if (moved.sign != diff.sign) { // sens des flèches inversé pour cet axe : on l'apprend
+                if (invKey in inverted) inverted.remove(invKey) else inverted.add(invKey)
+                return@repeat
+            }
+            step = max(1.0, abs(moved).toDouble() / count)
+            val newDiff = target - updated
+            if (newDiff != 0 && newDiff.sign != diff.sign) {
+                flips++
+                if (flips >= 4) return
+            }
+        }
+    }
+
+    /** Hypothèse de départ : DROITE augmente X, BAS augmente Y (corrigée automatiquement si fausse). */
+    private fun increaseKey(axis: Int, invertedAxis: Boolean): Int {
+        val base = if (axis == AXIS_X) KEY_RIGHT else KEY_DOWN
+        return if (invertedAxis) opposite(base) else base
+    }
+
+    private fun opposite(key: Int): Int = when (key) {
+        KEY_RIGHT -> KEY_LEFT
+        KEY_LEFT -> KEY_RIGHT
+        KEY_UP -> KEY_DOWN
+        else -> KEY_UP
     }
 
     // ------------------------------------------------------------------
     // Outils ADB
     // ------------------------------------------------------------------
 
-    /** Photographie de tous les réglages lisibles : "global:clé", "system:clé", "secure:clé", "prop:clé". */
-    private suspend fun snapshot(): Map<String, String> {
-        val map = HashMap<String, String>()
-        for (namespace in SETTINGS_NAMESPACES) {
-            adb.shell("settings list $namespace").output.lineSequence().forEach { line ->
-                val separator = line.indexOf('=')
-                if (separator > 0) map["$namespace:${line.substring(0, separator)}"] = line.substring(separator + 1)
-            }
-        }
-        adb.shell("getprop").output.lineSequence().forEach { line ->
-            PROP_REGEX.find(line.trim())?.let { m -> map["prop:${m.groupValues[1]}"] = m.groupValues[2] }
-        }
-        return map
+    private suspend fun ensureAdb() {
+        val state = adb.ensureConnected()
+        if (state !is AdbState.Connected) throw IllegalStateException("ADB non connecté : ${adb.describe(state)}")
     }
 
-    private fun diff(before: Map<String, String>, after: Map<String, String>): Set<String> {
-        val changed = after.filter { (key, value) -> before[key] != value }.keys
-            .filterNot { isNoise(it) }
-            .toSet()
-        val hinted = changed.filter { KEYSTONE_HINT_REGEX.containsMatchIn(it) }.toSet()
-        return if (hinted.isNotEmpty()) hinted else changed
-    }
-
-    private fun isNoise(key: String): Boolean {
-        if (key.startsWith("prop:ro.") || key.startsWith("prop:init.svc.")) return true
-        return NOISE_REGEX.containsMatchIn(key.substringAfter(':')) && !KEYSTONE_HINT_REGEX.containsMatchIn(key)
-    }
-
-    /** Retourne null si l'écriture a réussi, sinon un message d'erreur court. */
-    private suspend fun write(key: String, value: String): String? {
-        val namespace = key.substringBefore(':')
-        val name = key.substringAfter(':')
-        val command = when (namespace) {
-            "global", "system", "secure" -> "settings put $namespace ${quote(name)} ${quote(value)}"
-            "prop" -> "setprop ${quote(name)} ${quote(value)}"
-            else -> return "$name : espace inconnu"
+    private suspend fun readCorners(): Map<String, XY> {
+        val out = adb.shell("getprop | grep vendor.mstar.pos_").output
+        return CORNER_REGEX.findAll(out).associate { m ->
+            m.groupValues[1] to XY(m.groupValues[2].toInt(), m.groupValues[3].toInt())
         }
-        val response = adb.shell(command)
-        val out = response.allOutput.trim()
-        val failed = response.exitCode != 0 ||
-            out.contains("Exception") ||
-            out.contains("Failed", ignoreCase = true) ||
-            out.contains("Error", ignoreCase = true)
-        return if (failed) "$name : ${out.ifEmpty { "code ${response.exitCode}" }.take(80)}" else null
+    }
+
+    private fun parseXY(raw: String): XY? {
+        val parts = raw.trim().split(':')
+        if (parts.size != 2) return null
+        val x = parts[0].trim().toIntOrNull() ?: return null
+        val y = parts[1].trim().toIntOrNull() ?: return null
+        return XY(x, y)
+    }
+
+    private suspend fun press(keyCode: Int, count: Int) {
+        val codes = List(count) { keyCode }.joinToString(" ")
+        val response = adb.shell("input keyevent $codes", retry = false)
+        if (response.exitCode != 0) {
+            throw IllegalStateException("envoi de touche refusé : ${response.allOutput.trim()}")
+        }
     }
 
     private fun quote(text: String): String = "'" + text.replace("'", "'\\''") + "'"
@@ -239,7 +358,7 @@ class KeystoneEngine(
             .output.lineSequence().map { it.trim() }.lastOrNull { it.contains('/') }?.substringBefore('/')
     }.getOrNull()
 
-    /** Choisit, parmi les écrans visités, celui qui est le plus probablement le réglage trapèze. */
+    /** Parmi les écrans visités, celui qui est le plus probablement le réglage trapèze. */
     private suspend fun pickMenuComponent(seen: List<String>): String? {
         val home = homePackage()
         val candidates = seen.filter {
@@ -248,6 +367,4 @@ class KeystoneEngine(
         }
         return candidates.lastOrNull { MENU_HINT_REGEX.containsMatchIn(it) } ?: candidates.lastOrNull()
     }
-
-    suspend fun currentConfig(): EngineConfig = repository.currentConfig()
 }
