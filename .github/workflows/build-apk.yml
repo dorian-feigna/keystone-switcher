@@ -60,22 +60,19 @@ jobs:
           path: build.log
           retention-days: 7
 
-      - name: Déplacer le tag latest sur ce commit
+      # Publication via gh (CLI préinstallée sur le runner) : suppression puis recréation
+      # de la Release "latest" et de son tag sur le commit courant (remplace softprops, sujet à une course avec l API).
+      - name: Publier la Release « latest »
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes || true
-          git tag -f latest
-          git push -f origin refs/tags/latest
-
-      - name: Publier la Release « latest »
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: Keystone Switcher – build ${{ github.run_number }}
-          body: |
-            APK debug compilé depuis ${{ github.sha }}.
-            Lien direct pour Downloader :
-            https://github.com/${{ github.repository }}/releases/download/latest/app-debug.apk
-          files: app/build/outputs/apk/debug/app-debug.apk
-          make_latest: true
+          gh release delete latest --yes --cleanup-tag || true
+          git push origin :refs/tags/latest || true
+          sleep 5
+          gh release create latest app/build/outputs/apk/debug/app-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "Keystone Switcher – build $GITHUB_RUN_NUMBER" \
+            --notes "APK debug compilé depuis $GITHUB_SHA. Lien direct pour Downloader : https://github.com/$GITHUB_REPOSITORY/releases/download/latest/app-debug.apk" \
+            --latest
+          gh release view latest --json assets --jq '.assets[].name'
